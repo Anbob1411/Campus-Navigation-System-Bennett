@@ -9,7 +9,6 @@ import java.awt.Font;
 import java.awt.FontMetrics;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
-import java.awt.GridLayout;
 import java.awt.Rectangle;
 import java.awt.Stroke;
 import java.awt.event.MouseAdapter;
@@ -961,6 +960,8 @@ public class CampusNavigation {
         // ── bottom gate ──────────────────────────────────────
         new Waypoint(27, "W-Gate",      265, 686),  // West gate
         new Waypoint(28, "E-Gate",      584, 686),  // East gate
+        new Waypoint(29, "Gate1",       437, 686),  // Main Gate 1
+        new Waypoint(30, "Parking",     513, 647),  // Parking Lot Center
     };
 
     static WaypointGraph buildGraph() {
@@ -1016,8 +1017,14 @@ public class CampusNavigation {
         g.addEdge(26,24);  // N2-Side → N-Bot
         g.addEdge(26,28);  // N2-Side → E-Gate (south exit from N area)
 
-        // ── Bottom gate (y≈686) ──────────────────────────────
-        g.addEdge(27,28);
+        // ── Bottom gate & Parking network ────────────────────
+        g.addEdge(27,29); g.addEdge(29,28); // W-Gate ↔ Gate1 ↔ E-Gate
+        g.addEdge(23,29); // P-Bot to Gate1
+        // Connect N-area to Gate 1 and Parking
+        g.addEdge(24,29); // N-Bot to Gate1
+        g.addEdge(24,30); // N-Bot to Parking
+        g.addEdge(30,28); // Parking to E-Gate
+        g.addEdge(26,30); // N2-Side to Parking (allows shortcutting through parking)
 
         return g;
     }
@@ -1106,14 +1113,14 @@ public class CampusNavigation {
         wpMap.put("N2 Block", 26); // N2-Side
 
         // Gates & Parking
-        // Gate 1 center≈(430,695): E-Gate(584,686)=156px vs W-Gate(265,686)=165px → E-Gate
-        wpMap.put("Gate 1",   28); // E-Gate
-        // Gate 2 center≈(267,692): W-Gate(265,686)=7px
+        // Gate 1 center≈(430,695): directly mapped to Gate1 (29)
+        wpMap.put("Gate 1",   29); // Gate1
+        // Gate 2 center≈(267,692): W-Gate(265,686)
         wpMap.put("Gate 2",   27); // W-Gate
-        // Gate 3 center≈(437,15):  Center-Top(437,22)=7px
+        // Gate 3 center≈(437,15):  Center-Top(437,22)
         wpMap.put("Gate 3",    1); // Center-Top
-        // Parking center≈(513,647): N-Bot(492,619)=34px
-        wpMap.put("Parking Lot", 24); // N-Bot
+        // Parking center≈(513,647): mapped to Parking (30)
+        wpMap.put("Parking Lot", 30); // Parking
 
         // Sports
         // K Block center≈(648,62):  Right-Top(584,22)=74px vs K-Top(736,22)=89px → Right-Top
