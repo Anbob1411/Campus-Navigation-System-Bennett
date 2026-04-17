@@ -21,10 +21,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
+import java.util.PriorityQueue;
 import java.util.Set;
 import javax.imageio.ImageIO;
 import javax.swing.BorderFactory;
@@ -69,11 +68,31 @@ class Waypoint {
 }
 
 // ============================================================
-//  WAYPOINT GRAPH  –  adjacency list + BFS path-finder
+//  ROUTE RESULT  –  path IDs + total real-world distance in m
+// ============================================================
+class RouteResult {
+    int[]  path;       // waypoint IDs in order
+    double distMeters; // total meters (calibrated)
+    RouteResult(int[] path, double distMeters) { this.path = path; this.distMeters = distMeters; }
+}
+
+// ============================================================
+//  WAYPOINT GRAPH  –  weighted adjacency list + Dijkstra
+//
+//  Scale: the campus map image spans ~750 px wide.
+//  Gate-1 to Gate-3 (south to north) is ~700 m on a real campus.
+//  That corridor is ~668 px tall  →  ~1.047 m/px
+//  We use PIXELS_PER_METER = 0.955 (≈1 px ≈ 1.047 m, inverted)
+//  so  metres = pixels / PIXELS_PER_METER
 // ============================================================
 class WaypointGraph {
+    static final double PIXELS_PER_METER = 0.955; // calibration constant
+
     Waypoint[] points;
-    List<Integer>[] adj;
+
+    /** adjacency list: each entry is {neighbourId, distancePixels} */
+    @SuppressWarnings("unchecked")
+    List<double[]>[] adj; // double[]{neighbourId, pixelDist}
 
     @SuppressWarnings("unchecked")
     WaypointGraph(Waypoint[] points) {
@@ -82,24 +101,48 @@ class WaypointGraph {
         for (int i = 0; i < points.length; i++) adj[i] = new ArrayList<>();
     }
 
-    void addEdge(int a, int b) { adj[a].add(b); adj[b].add(a); }
+    void addEdge(int a, int b) {
+        double d = Math.hypot(points[a].x - points[b].x, points[a].y - points[b].y);
+        adj[a].add(new double[]{b, d});
+        adj[b].add(new double[]{a, d});
+    }
 
-    int[] findPath(int startId, int endId) {
+    /** Convert pixel distance to real metres. */
+    static double toMeters(double pixels) { return pixels / PIXELS_PER_METER; }
+
+    /**
+     * Dijkstra's shortest-path (minimises real distance, not hop count).
+     * Returns the path as an array of waypoint IDs, or empty if unreachable.
+     */
+    RouteResult findPath(int startId, int endId) {
         int n = points.length;
-        int[] prev = new int[n];
+        double[] dist = new double[n];
+        int[]    prev = new int[n];
+        Arrays.fill(dist, Double.MAX_VALUE);
         Arrays.fill(prev, -1);
-        boolean[] vis = new boolean[n];
-        Queue<Integer> q = new LinkedList<>();
-        q.add(startId); vis[startId] = true;
-        while (!q.isEmpty()) {
-            int cur = q.poll();
-            if (cur == endId) break;
-            for (int nb : adj[cur]) if (!vis[nb]) { vis[nb] = true; prev[nb] = cur; q.add(nb); }
+        dist[startId] = 0;
+
+        // PQ: {distanceSoFar, nodeId}
+        PriorityQueue<double[]> pq = new PriorityQueue<>((x, y) -> Double.compare(x[0], y[0]));
+        pq.offer(new double[]{0, startId});
+
+        while (!pq.isEmpty()) {
+            double[] top = pq.poll();
+            double d = top[0]; int u = (int) top[1];
+            if (d > dist[u]) continue;
+            if (u == endId) break;
+            for (double[] edge : adj[u]) {
+                int v = (int) edge[0]; double w = edge[1];
+                double nd = dist[u] + w;
+                if (nd < dist[v]) { dist[v] = nd; prev[v] = u; pq.offer(new double[]{nd, v}); }
+            }
         }
-        if (prev[endId] == -1 && startId != endId) return new int[0];
+
+        if (dist[endId] == Double.MAX_VALUE && startId != endId) return new RouteResult(new int[0], 0);
         List<Integer> path = new ArrayList<>();
         for (int v = endId; v != -1; v = prev[v]) path.add(0, v);
-        return path.stream().mapToInt(Integer::intValue).toArray();
+        int[] arr = path.stream().mapToInt(Integer::intValue).toArray();
+        return new RouteResult(arr, toMeters(dist[endId]));
     }
 }
 
@@ -168,13 +211,15 @@ class MapPanel extends JPanel {
     Rectangle[] classHitBoxes = null;
 
     // Navigation path (Hostel room -> Classroom)
-    int[]    navPath   = null;
-    Building navSource = null;
-    Building navTarget = null;
-    double   navDistance = 0;
-    
+    int[]    navPath       = null;
+    Building navSource     = null;
+    Building navTarget     = null;
+    double   navDistance   = 0;  // metres
+    int      navFloorNumber = 0; // floor the person starts from (0 = ground)
+
     // Route path (Building -> Building from right panel)
-    int[] routePath = null;
+    int[]  routePath     = null;
+    double routeDistance = 0; // metres
 
     BufferedImage backgroundImage = null;
     
@@ -222,8 +267,6 @@ class MapPanel extends JPanel {
                     for (int i = 0; i < classHitBoxes.length; i++) {
                         if (classHitBoxes[i] != null && classHitBoxes[i].contains(mx, my)) {
                             navigateTo(classroomList[i]);
-                            // Path is now set — dismiss the card immediately and stop timer
-                            // so the route stays on screen until user manually clears it
                             clickedBuilding = null; selectedFloor = null; selectedRoom = null;
                             showClassList = false; dismissTimer.stop();
                             repaint(); return;
@@ -241,6 +284,7 @@ class MapPanel extends JPanel {
                     for (int i = 0; i < floorHitBoxes.length; i++) {
                         if (floorHitBoxes[i] != null && floorHitBoxes[i].contains(mx, my)) {
                             selectedFloor = clickedBuilding.floors[i];
+                            navFloorNumber = parseFloorNumber(selectedFloor.name);
                             selectedRoom = null; navPath = null;
                             resetDismissTimer(); repaint(); return;
                         }
@@ -261,14 +305,15 @@ class MapPanel extends JPanel {
                     if (b.isClicked(mx, my)) {
                         clickedBuilding = b; selectedFloor = null;
                         selectedRoom = null; navPath = null;
-                        navTarget = null; showClassList = false;
+                        navTarget = null; navFloorNumber = 0; showClassList = false;
                         resetDismissTimer(); repaint(); return;
                     }
                 }
                 // 6. Empty space — dismiss immediately and stop timer
                 dismissTimer.stop();
                 clickedBuilding = null; selectedFloor = null; selectedRoom = null;
-                navPath = null; navSource = null; navTarget = null; showClassList = false; repaint();
+                navPath = null; navSource = null; navTarget = null;
+                navFloorNumber = 0; showClassList = false; repaint();
             }
         });
     }
@@ -276,36 +321,163 @@ class MapPanel extends JPanel {
     // Restart the 4-second auto-dismiss countdown
     void resetDismissTimer() { dismissTimer.restart(); }
 
+    // ── Time-formatting helpers ────────────────────────────────
+    /** Formats a total number of seconds into a human-readable string. */
+    static String formatDuration(int totalSec) {
+        if (totalSec <= 0) return "0 sec";
+        int mins = totalSec / 60, secs = totalSec % 60;
+        if (mins == 0) return secs + " sec";
+        return mins + " min" + (secs > 0 ? " " + secs + " sec" : "");
+    }
+
+    /** Horizontal walking time only (1.4 m/s average walking pace). */
+    static String walkTime(double meters) {
+        return formatDuration((int) Math.round(meters / 1.4));
+    }
+
+    /**
+     * Total travel time including:
+     *  - horizontal road walking at 1.4 m/s
+     *  - stair descent: 20 sec per floor (stairs, not elevator)
+     *    (climbing is not modelled — assumes person walks down to exit)
+     */
+    static String walkTimeWithFloor(double meters, int floorNum) {
+        int walkSec  = (int) Math.round(meters / 1.4);
+        int stairSec = floorNum * 20; // 20 sec per floor on stairs
+        return formatDuration(walkSec + stairSec);
+    }
+
+    /** Parses the floor level from a floor name like "Ground Floor", "Floor 2", "3rd Floor". */
+    static int parseFloorNumber(String floorName) {
+        if (floorName == null) return 0;
+        String low = floorName.toLowerCase().trim();
+        if (low.startsWith("ground") || low.startsWith("g")) return 0;
+        // try to extract any integer in the string (e.g. "Floor 3", "3rd Floor", "12th Floor")
+        for (String token : low.split("\\D+")) {
+            if (!token.isEmpty()) {
+                try { return Integer.parseInt(token); }
+                catch (NumberFormatException ignored) {}
+            }
+        }
+        return 0;
+    }
+
+    // ── Step builder ───────────────────────────────────────────
+    /** Builds a human-readable step list from a waypoint path with per-segment distances. */
+    String buildSteps(String fromName, String toName, int[] path, double totalMeters, int floorNum) {
+        if (path == null || path.length == 0) return "No path found.";
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== ROUTE BREAKDOWN ===\n");
+        sb.append("FROM : ").append(fromName).append("\n");
+        sb.append("TO   : ").append(toName).append("\n");
+        sb.append("──────────────────────\n");
+
+        // ── Step 0: descend stairs (only if above ground floor) ──────────
+        int step = 1;
+        if (floorNum > 0) {
+            int stairSec = floorNum * 20;
+            sb.append(String.format("\uD83C\uDFE2  Descend %d floor%s via stairs%n", floorNum, floorNum > 1 ? "s" : ""));
+            sb.append(String.format("   ~%s (%d sec)%n", formatDuration(stairSec), stairSec));
+            step = 2; // start road steps at ②
+        }
+
+        // Leg 0: source building → first waypoint
+        Waypoint fw = graph.points[path[0]];
+        int srcX = (navSource != null) ? navSource.centreX() : start.centreX();
+        int srcY = (navSource != null) ? navSource.centreY() : start.centreY();
+        String dirStart = compassDir(srcX, srcY, fw.x, fw.y);
+        double leg0m = WaypointGraph.toMeters(Math.hypot(srcX - fw.x, srcY - fw.y));
+        sb.append(String.format("%s  Head %s to %s%n", circled(step), dirStart, fw.label));
+        sb.append(String.format("   %.0f m  (~%s)%n", leg0m, walkTime(leg0m)));
+        step++;
+
+        // Intermediate waypoint-to-waypoint legs
+        for (int i = 0; i < path.length - 1; i++) {
+            Waypoint w1 = graph.points[path[i]];
+            Waypoint w2 = graph.points[path[i+1]];
+            String dir = compassDir(w1.x, w1.y, w2.x, w2.y);
+            double legM = WaypointGraph.toMeters(Math.hypot(w1.x - w2.x, w1.y - w2.y));
+            sb.append(String.format("%s  Continue %s to %s%n", circled(step), dir, w2.label));
+            sb.append(String.format("   %.0f m  (~%s)%n", legM, walkTime(legM)));
+            step++;
+        }
+
+        // Last leg: last waypoint → destination building
+        Waypoint lw = graph.points[path[path.length - 1]];
+        int dstX = (navTarget != null) ? navTarget.centreX() : end.centreX();
+        int dstY = (navTarget != null) ? navTarget.centreY() : end.centreY();
+        String dirEnd = compassDir(lw.x, lw.y, dstX, dstY);
+        double legLastM = WaypointGraph.toMeters(Math.hypot(lw.x - dstX, lw.y - dstY));
+        sb.append(String.format("%s  Arrive %s at %s%n", circled(step), dirEnd, toName));
+        sb.append(String.format("   %.0f m  (~%s)%n", legLastM, walkTime(legLastM)));
+        step++;
+
+        sb.append("──────────────────────\n");
+        int totalSec = (int) Math.round(totalMeters / 1.4) + (floorNum * 20);
+        sb.append(String.format("TOTAL : ~%.0f m%n", totalMeters));
+        if (floorNum > 0) {
+            sb.append(String.format("  Walk  : ~%s%n", walkTime(totalMeters)));
+            sb.append(String.format("  Stairs: ~%s (%d floor%s)%n",
+                formatDuration(floorNum * 20), floorNum, floorNum > 1 ? "s" : ""));
+        }
+        sb.append(String.format("TIME  : ~%s total%n", formatDuration(totalSec)));
+        sb.append("\nClick Reset to clear map.");
+        return sb.toString();
+    }
+
+    private static String circled(int n) {
+        String[] s = {"①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩","⑪","⑫","⑬","⑭","⑮"};
+        return (n >= 1 && n <= s.length) ? s[n-1] : String.valueOf(n);
+    }
+
+    /** Returns a compass-direction word from (x1,y1) toward (x2,y2). */
+    static String compassDir(int x1, int y1, int x2, int y2) {
+        int dx = x2 - x1, dy = y2 - y1; // dy positive = downward on screen = south
+        double angle = Math.toDegrees(Math.atan2(dy, dx)); // -180..180, 0=east
+        if (angle < 0) angle += 360;
+        if      (angle < 22.5  || angle >= 337.5) return "East";
+        else if (angle < 67.5)  return "South-East";
+        else if (angle < 112.5) return "South";
+        else if (angle < 157.5) return "South-West";
+        else if (angle < 202.5) return "West";
+        else if (angle < 247.5) return "North-West";
+        else if (angle < 292.5) return "North";
+        else                    return "North-East";
+    }
+
     void navigateTo(Building target) {
         if (clickedBuilding == null || target == null) return;
         int from = clickedBuilding.waypointId, to = target.waypointId;
-        navPath   = (from < 0 || to < 0) ? new int[0] : graph.findPath(from, to);
-        navSource = clickedBuilding;
-        navTarget = target;
-        
-        navDistance = 0;
-        if (navPath != null && navPath.length > 0) {
-            Waypoint firstWP = graph.points[navPath[0]];
-            navDistance += Math.hypot(navSource.centreX() - firstWP.x, navSource.centreY() - firstWP.y);
-            for (int i = 0; i < navPath.length - 1; i++) {
-                Waypoint w1 = graph.points[navPath[i]];
-                Waypoint w2 = graph.points[navPath[i+1]];
-                navDistance += Math.hypot(w1.x - w2.x, w1.y - w2.y);
-            }
-            Waypoint lastWP = graph.points[navPath[navPath.length - 1]];
-            navDistance += Math.hypot(navTarget.centreX() - lastWP.x, navTarget.centreY() - lastWP.y);
-        } else {
-            navDistance = navSource.distanceTo(navTarget);
+        RouteResult rr = (from < 0 || to < 0) ? new RouteResult(new int[0], 0) : graph.findPath(from, to);
+        navPath    = rr.path;
+        navSource  = clickedBuilding;
+        navTarget  = target;
+
+        // Total distance = Dijkstra road distance + straight legs to/from buildings
+        double dijkstraM = rr.distMeters;
+        double legStartM = 0, legEndM = 0;
+        if (navPath.length > 0) {
+            Waypoint fw = graph.points[navPath[0]];
+            Waypoint lw = graph.points[navPath[navPath.length - 1]];
+            legStartM = WaypointGraph.toMeters(Math.hypot(navSource.centreX() - fw.x, navSource.centreY() - fw.y));
+            legEndM   = WaypointGraph.toMeters(Math.hypot(navTarget.centreX() - lw.x, navTarget.centreY() - lw.y));
         }
-        navDistance *= 2.0;
-        
+        navDistance = dijkstraM + legStartM + legEndM;
+        if (navPath.length == 0) navDistance = WaypointGraph.toMeters(navSource.distanceTo(navTarget));
+
         if (CampusNavigation.statusLabel != null && CampusNavigation.infoArea != null) {
             String fromStr = navSource.name + (selectedRoom != null ? " (Room " + selectedRoom.number + ")" : "");
-            CampusNavigation.statusLabel.setText("  Route: " + fromStr + " → " + navTarget.name +
-                    "  |  ~" + String.format("%.0f", navDistance) + " m");
-            CampusNavigation.infoArea.setText("=== HOSTEL ROUTE ===\nFROM: " + fromStr +
-                    "\nTO:   " + navTarget.name +
-                    "\n\nDist: ~" + String.format("%.0f", navDistance) + " metres via roads\n\nClick Reset to clear map.");
+            // Status bar: total time including stair descent
+            String totalTime = walkTimeWithFloor(navDistance, navFloorNumber);
+            String stairNote = navFloorNumber > 0
+                ? "  [+" + (navFloorNumber * 20) + "s stairs, floor " + navFloorNumber + "]"
+                : "";
+            CampusNavigation.statusLabel.setText(
+                "  Route: " + fromStr + " \u2192 " + navTarget.name +
+                "  |  ~" + String.format("%.0f", navDistance) + " m" +
+                "  (~" + totalTime + " walk)" + stairNote);
+            String steps = buildSteps(fromStr, navTarget.name, navPath, navDistance, navFloorNumber);
+            CampusNavigation.infoArea.setText(steps);
         }
     }
 
@@ -403,6 +575,9 @@ class MapPanel extends JPanel {
                     g2.drawLine(a.x, a.y, b2.x, b2.y);
                 }
                 g2.drawLine(lWP.x, lWP.y, end.centreX(), end.centreY());
+                // Waypoint dots on route
+                g2.setColor(new Color(0, 220, 255, 180));
+                for (int id : routePath) { Waypoint w = graph.points[id]; g2.fillOval(w.x-4, w.y-4, 8, 8); }
             } else {
                 g2.setColor(new Color(0, 200, 255, 80));
                 g2.setStroke(new BasicStroke(8, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
@@ -418,6 +593,21 @@ class MapPanel extends JPanel {
             // End marker (red pulse)
             g2.setColor(new Color(255,60,60,60)); g2.fillOval(end.centreX()-10, end.centreY()-10, 20, 20);
             g2.setColor(new Color(255,80,80));    g2.fillOval(end.centreX()-6,  end.centreY()-6,  12, 12);
+            // Distance badge near midpoint
+            if (routeDistance > 0) {
+                int mx2 = (start.centreX() + end.centreX()) / 2;
+                int my2 = (start.centreY() + end.centreY()) / 2;
+                String badge = String.format("%.0f m | ~%s", routeDistance, walkTime(routeDistance));
+                g2.setFont(new Font("SansSerif", Font.BOLD, 11));
+                FontMetrics fm2 = g2.getFontMetrics();
+                int bw = fm2.stringWidth(badge) + 14, bh = 18;
+                g2.setColor(new Color(0, 0, 0, 160));
+                g2.fillRoundRect(mx2 - bw/2, my2 - bh/2, bw, bh, bh, bh);
+                g2.setColor(new Color(0, 220, 255));
+                g2.drawRoundRect(mx2 - bw/2, my2 - bh/2, bw, bh, bh, bh);
+                g2.setColor(Color.WHITE);
+                g2.drawString(badge, mx2 - bw/2 + 7, my2 + 5);
+            }
         }
 
         // Waypoint nav path (Hostel room -> Classroom, amber glow dashed)
@@ -448,6 +638,19 @@ class MapPanel extends JPanel {
             // Waypoint dots
             g2.setColor(new Color(255, 220, 80));
             for (int id : navPath) { Waypoint w = graph.points[id]; g2.fillOval(w.x-4, w.y-4, 8, 8); }
+            // Distance badge on nav route
+            int mx2 = (navSource.centreX() + navTarget.centreX()) / 2;
+            int my2 = (navSource.centreY() + navTarget.centreY()) / 2;
+            String badge = String.format("%.0f m | ~%s", navDistance, walkTime(navDistance));
+            g2.setFont(new Font("SansSerif", Font.BOLD, 11));
+            FontMetrics fmB = g2.getFontMetrics();
+            int bw = fmB.stringWidth(badge) + 14, bh = 18;
+            g2.setColor(new Color(0, 0, 0, 160));
+            g2.fillRoundRect(mx2 - bw/2, my2 - bh/2 - 14, bw, bh, bh, bh);
+            g2.setColor(new Color(255, 200, 0));
+            g2.drawRoundRect(mx2 - bw/2, my2 - bh/2 - 14, bw, bh, bh, bh);
+            g2.setColor(Color.WHITE);
+            g2.drawString(badge, mx2 - bw/2 + 7, my2 - bh/2 - 14 + 13);
             // Target circle
             g2.setColor(new Color(255,80,80,80)); g2.fillOval(navTarget.centreX()-10, navTarget.centreY()-10, 20, 20);
             g2.setColor(new Color(220, 60, 60));  g2.fillOval(navTarget.centreX()-6, navTarget.centreY()-6, 12, 12);
@@ -558,7 +761,6 @@ class MapPanel extends JPanel {
         drawInfoLine(g, "Floor    : " + selectedFloor.name, cX+pad, ty); ty += 16;
         drawInfoLine(g, "Room No. : " + r.number,           cX+pad, ty); ty += 16;
         drawInfoLine(g, "Type     : " + r.type,             cX+pad, ty); ty += 16;
-        // Status line removed as per user request
         g.setColor(new Color(150, 180, 220)); g.setFont(new Font("Arial", Font.PLAIN, 9));
         g.drawString("(click different building to restart)", cX+pad, ty); ty += 14;
         // Navigate button
@@ -570,7 +772,9 @@ class MapPanel extends JPanel {
         g.drawString("  → Navigate to Classroom", btnX+6, btnY+15);
         if (navTarget != null) {
             g.setColor(new Color(255, 220, 80)); g.setFont(new Font("Arial", Font.BOLD, 10));
-            String distStr = (navPath!=null && navPath.length>0) ? " ✓ (~" + String.format("%.0f", navDistance) + "m)" : " (no path)";
+            String distStr = (navPath!=null && navPath.length>0)
+                ? " ✓ (~" + String.format("%.0f", navDistance) + "m / ~" + walkTime(navDistance) + ")"
+                : " (no path)";
             g.drawString("Route to: " + navTarget.name + distStr,
                     cX+pad, btnY+btnH+12);
         }
@@ -651,10 +855,6 @@ class MapPanel extends JPanel {
         if (cur.length()>0) lines.add(cur.toString());
         return lines;
     }
-    private void drawLegendBox(Graphics g, Color c, String label, int x, int y) {
-        g.setColor(c); g.fillRect(x,y,14,14); g.setColor(Color.BLACK); g.drawRect(x,y,14,14);
-        g.setFont(new Font("SansSerif", Font.PLAIN, 9)); g.drawString(label, x+17, y+11);
-    }
     private void drawLegendPill(Graphics2D g2, Color fill, Color text, String label, int x, int y) {
         FontMetrics fm = g2.getFontMetrics(new Font("SansSerif", Font.BOLD, 10));
         int tw = fm.stringWidth(label), ph = 18, pw = tw+16;
@@ -701,42 +901,121 @@ public class CampusNavigation {
     };
 
     // ── Waypoints ─────────────────────────────────────────────
+    //  Pixel coordinates match the campus map (750×700 px).
+    //  Scale: 700 m ÷ 668 px ≈ 1.048 m/px  (PIXELS_PER_METER = 0.955)
+    //
+    //  Road network (from CampusPaths):
+    //   Top horiz      y≈22,  x: 265→736
+    //   Outer-left     x≈265, y: 22→686
+    //   Inner-left     x≈290, y: 26→296   ← new, runs through hostel area
+    //   Center vert    x≈437, y: 22→474
+    //   Right vert     x≈584, y: 22→686
+    //   Mess-top horiz y≈98,  x: 437→584
+    //   Mess-bot horiz y≈179, x: 265→584
+    //   A/B horiz      y≈326, x: 278→584
+    //   K horiz        y≈292, x: 584→736
+    //   P/N horiz      y≈474, x: 382→492
+    //   P vert         x≈382, y: 474→619
+    //   N vert         x≈492, y: 474→619
+    //   N-east corr    x≈578, y: 496→590  ← new, connects N1↔N2 east side
+    //   Bottom gate    y≈686, x: 265→584
     static final Waypoint[] waypoints = {
-        new Waypoint(0,  "NW-Top",      265,  22),
-        new Waypoint(1,  "Center-Top",  437,  22),
-        new Waypoint(2,  "East-Top",    584,  22),
-        new Waypoint(3,  "K-Top",       736,  22),
-        new Waypoint(4,  "Mess-Top",    437,  98),
-        new Waypoint(5,  "E-Mess-Top",  584,  98),
-        new Waypoint(6,  "West-Mid",    265, 179),
-        new Waypoint(7,  "Center-Mid",  437, 179),
-        new Waypoint(8,  "East-Mid",    584, 179),
-        new Waypoint(9,  "West-Low",    265, 326),
-        new Waypoint(10, "Center-AB",   437, 326),
-        new Waypoint(11, "E-K-Jct",     584, 292),
-        new Waypoint(12, "East-AB",     584, 326),
-        new Waypoint(13, "K-Jct",       736, 292),
-        new Waypoint(14, "Center-PN",   437, 474),
-        new Waypoint(15, "P-Jct",       382, 474),
-        new Waypoint(16, "N-Jct",       492, 474),
-        new Waypoint(17, "P-Bot",       382, 615),
-        new Waypoint(18, "N-Bot",       492, 615),
-        new Waypoint(19, "West-Gate",   265, 686),
-        new Waypoint(20, "East-Gate",   584, 686),
+        // ── top road ──────────────────────────────────────────
+        new Waypoint( 0, "NW-Top",      265,  22),  // outer-left + top
+        new Waypoint( 1, "Center-Top",  437,  22),  // center + top
+        new Waypoint( 2, "Right-Top",   584,  22),  // right + top
+        new Waypoint( 3, "K-Top",       736,  22),  // K-east + top
+        // ── inner-left vertical (x≈290, hostel zone) ─────────
+        new Waypoint( 4, "IL-Top",      290,  26),  // inner-left road top  (near C12)
+        new Waypoint( 5, "IL-Mid",      290, 179),  // inner-left + mess-bot horiz
+        new Waypoint( 6, "IL-Bot",      290, 296),  // inner-left bottom    (near A Block)
+        // ── mess horizontal roads ─────────────────────────────
+        new Waypoint( 7, "Mess-TL",     437,  98),  // center + mess-top horiz
+        new Waypoint( 8, "Mess-TR",     584,  98),  // right  + mess-top horiz
+        // ── mess-bottom horizontal (y≈179) ───────────────────
+        new Waypoint( 9, "W-Mid",       265, 179),  // outer-left + mess-bot
+        new Waypoint(10, "C-Mid",       437, 179),  // center     + mess-bot
+        new Waypoint(11, "R-Mid",       584, 179),  // right      + mess-bot
+        // ── A/B horizontal & K-block (y≈292-326) ────────────
+        new Waypoint(12, "W-AB",        265, 326),  // outer-left + AB road
+        new Waypoint(13, "C-AB",        437, 326),  // center     + AB road
+        new Waypoint(14, "R-KH",        584, 292),  // right      + K horiz
+        new Waypoint(15, "R-AB",        584, 326),  // right      + AB road
+        new Waypoint(16, "K-Jct",       736, 292),  // K-east road junction
+        // ── M Block level & P/N area ─────────────────────────
+        new Waypoint(17, "C-M",         437, 408),  // center road at M Block level
+        new Waypoint(18, "W-South",     265, 474),  // outer-left south (P Block level)
+        new Waypoint(19, "P-Jct",       382, 474),  // P road + P/N horiz
+        new Waypoint(20, "C-PN",        437, 474),  // center + P/N horiz
+        new Waypoint(21, "N-Jct",       492, 474),  // N road + P/N horiz
+        new Waypoint(22, "R-South",     584, 474),  // right road south
+        // ── P/N verticals ────────────────────────────────────
+        new Waypoint(23, "P-Bot",       382, 619),  // P vertical bottom
+        new Waypoint(24, "N-Bot",       492, 619),  // N vertical bottom
+        // ── N-Block east corridor (N1 ↔ N2 shortcut) ────────
+        new Waypoint(25, "N1-Side",     578, 496),  // east corridor near N1
+        new Waypoint(26, "N2-Side",     578, 590),  // east corridor near N2
+        // ── bottom gate ──────────────────────────────────────
+        new Waypoint(27, "W-Gate",      265, 686),  // West gate
+        new Waypoint(28, "E-Gate",      584, 686),  // East gate
     };
 
     static WaypointGraph buildGraph() {
         WaypointGraph g = new WaypointGraph(waypoints);
-        g.addEdge(0,1); g.addEdge(1,2); g.addEdge(2,3);   // top horizontal
-        g.addEdge(1,4); g.addEdge(4,7); g.addEdge(7,10); g.addEdge(10,14); // center vertical
-        g.addEdge(0,6); g.addEdge(6,9); g.addEdge(9,19);  // left vertical
-        g.addEdge(2,5); g.addEdge(5,8); g.addEdge(8,11); g.addEdge(11,12); g.addEdge(12,20); // right vertical
-        g.addEdge(4,5); g.addEdge(7,8);                   // mess horizontals
-        g.addEdge(3,13); g.addEdge(11,13);                 // K-block
-        g.addEdge(9,10); g.addEdge(10,12);                 // A/B horizontal
-        g.addEdge(14,15); g.addEdge(14,16);                // P/N area
-        g.addEdge(15,17); g.addEdge(16,18);
-        g.addEdge(19,20);                                  // gate horizontal
+
+        // ── Top horizontal road (y≈22) ────────────────────────
+        g.addEdge(0, 1); g.addEdge(1, 2); g.addEdge(2, 3);
+        g.addEdge(0, 4); g.addEdge(1, 4); // outer-left and center connect to inner-left at top
+
+        // ── Inner-left vertical (x≈290, hostel zone) ─────────
+        g.addEdge(4, 5); g.addEdge(5, 6);
+
+        // ── Inner-left cross-links ───────────────────────────
+        g.addEdge(9, 5);  // outer-left W-Mid  ↔ IL-Mid  (mess-bot horiz at y=179)
+        g.addEdge(6,12);  // IL-Bot (290,296)  ↔ W-AB    (265,326)  short stub
+        g.addEdge(6,13);  // IL-Bot            ↔ C-AB    (A Block road access)
+
+        // ── Center vertical (x≈437) ──────────────────────────
+        g.addEdge(1, 7); g.addEdge(7,10); g.addEdge(10,13);
+        g.addEdge(13,17); g.addEdge(17,20);
+
+        // ── Outer-left vertical (x≈265) ──────────────────────
+        g.addEdge(0, 9); g.addEdge(9,12); g.addEdge(12,18); g.addEdge(18,27);
+
+        // ── Right vertical (x≈584) ───────────────────────────
+        g.addEdge(2, 8); g.addEdge(8,11); g.addEdge(11,14);
+        g.addEdge(14,15); g.addEdge(15,22); g.addEdge(22,28);
+
+        // ── Mess-top horizontal (y≈98) ────────────────────────
+        g.addEdge(7, 8);
+
+        // ── Mess-bottom horizontal (y≈179) ───────────────────
+        g.addEdge(9,10); g.addEdge(10,11);
+
+        // ── A/B horizontal (y≈326) ───────────────────────────
+        g.addEdge(12,13); g.addEdge(13,15);
+
+        // ── K-block horizontal (y≈292) ───────────────────────
+        g.addEdge(3,16); g.addEdge(14,16);
+
+        // ── P/N horizontal (y≈474, x: 382→492) ──────────────
+        g.addEdge(19,20); g.addEdge(20,21);
+
+        // ── P vertical (x≈382) ───────────────────────────────
+        g.addEdge(19,23);
+
+        // ── N vertical (x≈492) ───────────────────────────────
+        g.addEdge(21,24);
+
+        // ── N-Block EAST corridor (N1 ↔ N2 shortcut) ────────
+        g.addEdge(21,25);  // N-Jct  → N1-Side
+        g.addEdge(25,26);  // N1-Side → N2-Side   (~94 px ≈ 98 m direct)
+        g.addEdge(26,24);  // N2-Side → N-Bot
+        g.addEdge(26,28);  // N2-Side → E-Gate (south exit from N area)
+
+        // ── Bottom gate (y≈686) ──────────────────────────────
+        g.addEdge(27,28);
+
         return g;
     }
 
@@ -801,40 +1080,84 @@ public class CampusNavigation {
     static Building[] classrooms;
 
     // ── Assign each building its nearest waypoint ──────────────
+    //  Hardcoded for named buildings; dynamic (closest by geometry) for hostels.
     static void assignWaypoints() {
         Map<String, Integer> wpMap = new HashMap<>();
-        wpMap.put("A Block",10); wpMap.put("B Block",10); wpMap.put("N Block",16);
-        wpMap.put("P Block",15); wpMap.put("M Block",10); wpMap.put("H Block",2);
-        wpMap.put("N1 Block",16); wpMap.put("N2 Block",18);
-        
-        // Gates and Parking
-        wpMap.put("Gate 1",19); wpMap.put("Gate 2",19); wpMap.put("Gate 3",1); wpMap.put("Parking Lot",18);
-        
+
+        // Academic blocks
+        // A Block center≈(360,355): nearest is C-AB(437,326)=83px vs W-AB(265,326)=99px
+        wpMap.put("A Block",  13); // C-AB
+        // B Block center≈(508,355): C-AB(437,326)=77px vs R-AB(584,326)=79px → C-AB wins
+        wpMap.put("B Block",  13); // C-AB
+        // N Block center≈(536,542): N-Bot(492,619)=95px vs N-Jct(492,474)=104px → N-Bot
+        wpMap.put("N Block",  24); // N-Bot
+        // P Block center≈(336,540): P-Bot(382,619)=90px vs P-Jct(382,474)=119px → P-Bot
+        wpMap.put("P Block",  23); // P-Bot
+        // M Block center≈(507,438): N-Jct(492,474)=39px  ← big improvement vs old WP10
+        wpMap.put("M Block",  21); // N-Jct
+        // H Block center≈(545,42):  Right-Top(584,22)=49px ✓
+        wpMap.put("H Block",   2); // Right-Top
+        // N1 Block center≈(558,496): N1-Side(578,496)=20px  ← dedicated access point
+        wpMap.put("N1 Block", 25); // N1-Side
+        // N2 Block center≈(558,590): N2-Side(578,590)=20px  ← dedicated access point
+        wpMap.put("N2 Block", 26); // N2-Side
+
+        // Gates & Parking
+        // Gate 1 center≈(430,695): E-Gate(584,686)=156px vs W-Gate(265,686)=165px → E-Gate
+        wpMap.put("Gate 1",   28); // E-Gate
+        // Gate 2 center≈(267,692): W-Gate(265,686)=7px
+        wpMap.put("Gate 2",   27); // W-Gate
+        // Gate 3 center≈(437,15):  Center-Top(437,22)=7px
+        wpMap.put("Gate 3",    1); // Center-Top
+        // Parking center≈(513,647): N-Bot(492,619)=34px
+        wpMap.put("Parking Lot", 24); // N-Bot
+
         // Sports
-        wpMap.put("K Block",3); wpMap.put("Padel Tennis", 4); wpMap.put("Pickleball 1", 5);
-        wpMap.put("Pickleball 2", 13); wpMap.put("Pickleball 3", 13);
-        wpMap.put("Lawn Tennis 1", 3); wpMap.put("Lawn Tennis 2", 3);
-        wpMap.put("Volleyball Court", 5); wpMap.put("Basketball Court", 5);
-        wpMap.put("Football Ground", 8); wpMap.put("Cricket Ground", 9);
-        wpMap.put("German Hanger", 14);
-        
+        // K Block center≈(648,62):  Right-Top(584,22)=74px vs K-Top(736,22)=89px → Right-Top
+        wpMap.put("K Block",       2); // Right-Top
+        // Padel Tennis center≈(385,67):  Center-Top(437,22)=65px vs Mess-TL(437,98)=63px → Mess-TL
+        wpMap.put("Padel Tennis",  7); // Mess-TL
+        // Pickleball 1 center≈(484,74):  Mess-TL(437,98)=53px
+        wpMap.put("Pickleball 1",  7); // Mess-TL
+        // Pickleball 2 center≈(713,151): K-Top(736,22)=130px vs K-Jct(736,292)=143px → K-Top
+        wpMap.put("Pickleball 2",  3); // K-Top
+        // Pickleball 3 center≈(713,219): K-Jct(736,292)=78px
+        wpMap.put("Pickleball 3", 16); // K-Jct
+        // Lawn Tennis 1 center≈(713,64):  K-Top(736,22)=48px
+        wpMap.put("Lawn Tennis 1", 3); // K-Top
+        // Lawn Tennis 2 center≈(713,106): K-Top(736,22)=87px vs K-Jct(736,292)=187px
+        wpMap.put("Lawn Tennis 2", 3); // K-Top
+        // Volleyball Court center≈(473,44): Center-Top(437,22)=46px
+        wpMap.put("Volleyball Court", 1); // Center-Top
+        // Basketball Court center≈(648,115): Mess-TR(584,98)=69px
+        wpMap.put("Basketball Court", 8); // Mess-TR
+        // Football Ground center≈(648,194): R-Mid(584,179)=67px
+        wpMap.put("Football Ground", 11); // R-Mid
+        // Cricket Ground center≈(257,559): W-South(265,474)=85px
+        wpMap.put("Cricket Ground", 18); // W-South
+        // German Hanger center≈(435,547): C-PN(437,474)=73px
+        wpMap.put("German Hanger", 20); // C-PN
+
         // Mess & Hangout
-        wpMap.put("Mess (Goble)", 4); wpMap.put("Snapeats", 16);
-        wpMap.put("Hotspot", 7); wpMap.put("Southern Stories", 7);
+        // Mess(Goble) center≈(492,136): Mess-TL(437,98)=65px vs Mess-TR(584,98)=95px
+        wpMap.put("Mess (Goble)",     7); // Mess-TL
+        // Snapeats center≈(520,395): C-M(437,408)=83px vs N-Jct(492,474)=84px → C-M
+        wpMap.put("Snapeats",        17); // C-M
+        // Hotspot center≈(410,248): C-Mid(437,179)=73px vs IL-Bot(290,296)=130px
+        wpMap.put("Hotspot",         10); // C-Mid
+        // Southern Stories center≈(458,248): C-Mid(437,179)=72px
+        wpMap.put("Southern Stories",10); // C-Mid
 
         for (Building b : buildings) {
             if (wpMap.containsKey(b.name)) {
                 b.waypointId = wpMap.get(b.name);
             } else {
-                // Find dynamically closest waypoint for any building without a hardcoded one (like Hostels)
+                // Dynamic: geometrically closest waypoint (used for hostel C/D blocks)
                 int closestId = -1;
                 double minDist = Double.MAX_VALUE;
                 for (Waypoint wp : waypoints) {
                     double dist = Math.hypot(b.centreX() - wp.x, b.centreY() - wp.y);
-                    if (dist < minDist) {
-                        minDist = dist;
-                        closestId = wp.id;
-                    }
+                    if (dist < minDist) { minDist = dist; closestId = wp.id; }
                 }
                 b.waypointId = closestId;
             }
@@ -862,7 +1185,6 @@ public class CampusNavigation {
         window.setSize(1100, 800);
         window.setLayout(new BorderLayout());
         window.getRootPane().setBorder(BorderFactory.createEmptyBorder());
-        // Dark content pane
         ((JPanel)window.getContentPane()).setBackground(new Color(10, 15, 35));
 
         statusLabel = new JLabel("  🗺  Click a building on the map — Hostels show floor/room drill-down  |  Use right panel for A→B routing");
@@ -905,7 +1227,7 @@ public class CampusNavigation {
             mapPanel.start = null; mapPanel.end = null;
             mapPanel.clickedBuilding = null; mapPanel.selectedFloor = null;
             mapPanel.selectedRoom = null; mapPanel.navPath = null; mapPanel.navSource = null; mapPanel.navTarget = null;
-            mapPanel.routePath = null;
+            mapPanel.routePath = null; mapPanel.routeDistance = 0;
             mapPanel.dismissTimer.stop();
             statusLabel.setText("  🗺  Cleared. Click a building to begin.");
             infoArea.setText("Select two buildings to find a route.");
@@ -913,11 +1235,6 @@ public class CampusNavigation {
         });
         buttonPanel.add(resetBtn);
 
-        Color[] btnBg = {
-            new Color(20,50,120), new Color(50,25,100), new Color(15,70,45),
-            new Color(100,50,15), new Color(18,28,65)
-        };
-        int bIdx = 0;
         for (Building b : buildings) {
             JButton btn = new JButton(b.name);
             String nm = b.name;
@@ -998,51 +1315,46 @@ public class CampusNavigation {
     static void buildingSelected(Building clicked) {
         if (mapPanel.start == null) {
             mapPanel.start = clicked;
-            mapPanel.routePath = null;
+            mapPanel.routePath = null; mapPanel.routeDistance = 0;
             statusLabel.setText("  START: " + clicked.name + "  |  Click another to set END.");
             infoArea.setText("START: " + clicked + "\n\nClick another building to set END.");
         } else if (mapPanel.end == null && clicked != mapPanel.start) {
             mapPanel.end = clicked;
             
-            // Calculate waypoint route
+            // Dijkstra route
             int wpStart = mapPanel.start.waypointId;
-            int wpEnd = mapPanel.end.waypointId;
+            int wpEnd   = mapPanel.end.waypointId;
             WaypointGraph graph = mapPanel.graph;
-            mapPanel.routePath = (wpStart < 0 || wpEnd < 0) ? new int[0] : graph.findPath(wpStart, wpEnd);
-            
-            // Calculate distance along the route
-            double totalMeters = 0;
-            if (mapPanel.routePath != null && mapPanel.routePath.length > 0) {
-                // Building -> First Waypoint
-                Waypoint firstWP = graph.points[mapPanel.routePath[0]];
-                totalMeters += Math.hypot(mapPanel.start.centreX() - firstWP.x, mapPanel.start.centreY() - firstWP.y);
-                
-                // Waypoint to Waypoint
-                for (int i = 0; i < mapPanel.routePath.length - 1; i++) {
-                    Waypoint w1 = graph.points[mapPanel.routePath[i]];
-                    Waypoint w2 = graph.points[mapPanel.routePath[i+1]];
-                    totalMeters += Math.hypot(w1.x - w2.x, w1.y - w2.y);
-                }
-                
-                // Last Waypoint -> Building
-                Waypoint lastWP = graph.points[mapPanel.routePath[mapPanel.routePath.length - 1]];
-                totalMeters += Math.hypot(mapPanel.end.centreX() - lastWP.x, mapPanel.end.centreY() - lastWP.y);
-            } else {
-                // Fallback to straight line if no path
-                totalMeters = mapPanel.start.distanceTo(clicked);
+            RouteResult rr = (wpStart < 0 || wpEnd < 0) ? new RouteResult(new int[0], 0)
+                                                         : graph.findPath(wpStart, wpEnd);
+            mapPanel.routePath = rr.path;
+
+            // Add straight legs from buildings to first/last waypoints
+            double legStartM = 0, legEndM = 0;
+            if (rr.path.length > 0) {
+                Waypoint fw = graph.points[rr.path[0]];
+                Waypoint lw = graph.points[rr.path[rr.path.length - 1]];
+                legStartM = WaypointGraph.toMeters(Math.hypot(mapPanel.start.centreX() - fw.x, mapPanel.start.centreY() - fw.y));
+                legEndM   = WaypointGraph.toMeters(Math.hypot(mapPanel.end.centreX()   - lw.x, mapPanel.end.centreY()   - lw.y));
             }
-            
-            // Convert pixels to approximate meters (assuming 1 pixel = ~2 meters)
-            totalMeters *= 2.0;
-            
+            double totalMeters = rr.distMeters + legStartM + legEndM;
+            if (rr.path.length == 0) totalMeters = WaypointGraph.toMeters(mapPanel.start.distanceTo(clicked));
+            mapPanel.routeDistance = totalMeters;
+
             statusLabel.setText("  Route: " + mapPanel.start.name + " → " + clicked.name +
-                    "  |  ~" + String.format("%.0f", totalMeters) + " m");
-            infoArea.setText("=== ROUTE ===\nFROM: " + mapPanel.start +
-                    "\nTO:   " + clicked +
-                    "\n\nDist: ~" + String.format("%.0f", totalMeters) + " metres via roads\n\nClick Reset to clear.");
+                    "  |  ~" + String.format("%.0f", totalMeters) + " m" +
+                    "  (~" + MapPanel.walkTime(totalMeters) + " walk)");
+
+            // Build step-by-step breakdown using navSource/navTarget shim
+            mapPanel.navSource = mapPanel.start;
+            mapPanel.navTarget = mapPanel.end;
+            String steps = mapPanel.buildSteps(mapPanel.start.name, mapPanel.end.name, mapPanel.routePath, totalMeters, 0);
+            mapPanel.navSource = null; mapPanel.navTarget = null;
+            infoArea.setText(steps);
+
         } else {
             mapPanel.start = clicked; mapPanel.end = null;
-            mapPanel.routePath = null;
+            mapPanel.routePath = null; mapPanel.routeDistance = 0;
             statusLabel.setText("  New START: " + clicked.name + "  |  Click another to set END.");
             infoArea.setText("START: " + clicked + "\n\nClick another building to set END.");
         }
