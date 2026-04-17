@@ -27,12 +27,15 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import javax.imageio.ImageIO;
 import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
+import javax.swing.SwingConstants;
 import javax.swing.Timer;
 
 // ============================================================
@@ -1180,49 +1183,84 @@ public class CampusNavigation {
 
         WaypointGraph graph = buildGraph();
 
-        JFrame window = new JFrame("Campus Navigation System");
+        JFrame window = new JFrame("Bennett University — Campus Navigator");
         window.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        window.setSize(1100, 800);
+        window.setSize(1220, 820);
         window.setLayout(new BorderLayout());
         window.getRootPane().setBorder(BorderFactory.createEmptyBorder());
         ((JPanel)window.getContentPane()).setBackground(new Color(10, 15, 35));
 
-        statusLabel = new JLabel("  🗺  Click a building on the map — Hostels show floor/room drill-down  |  Use right panel for A→B routing");
-        statusLabel.setFont(new Font("SansSerif", Font.BOLD, 13));
+        // ── NORTH: gradient title banner + status label ───────
+        JPanel northPanel = new JPanel(new BorderLayout()) {
+            @Override protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                Graphics2D g2 = (Graphics2D) g;
+                java.awt.GradientPaint gp = new java.awt.GradientPaint(
+                    0, 0, new Color(18, 40, 105), getWidth(), 0, new Color(6, 16, 52));
+                g2.setPaint(gp); g2.fillRect(0, 0, getWidth(), getHeight());
+            }
+        };
+        northPanel.setOpaque(true);
+        northPanel.setBackground(new Color(12, 22, 65));
+
+        JLabel titleLabel = new JLabel("  🏛  BENNETT UNIVERSITY  —  Campus Navigator");
+        titleLabel.setFont(new Font("SansSerif", Font.BOLD, 16));
+        titleLabel.setForeground(new Color(215, 238, 255));
+        titleLabel.setBorder(BorderFactory.createEmptyBorder(10, 14, 6, 14));
+        northPanel.add(titleLabel, BorderLayout.NORTH);
+
+        statusLabel = new JLabel("  🗺  Click a building on the map — Hostels: Floor → Room → Navigate  |  Right panel for A→B routing");
+        statusLabel.setFont(new Font("SansSerif", Font.PLAIN, 12));
         statusLabel.setOpaque(true);
-        statusLabel.setBackground(new Color(18, 28, 65));
-        statusLabel.setForeground(new Color(160, 210, 255));
+        statusLabel.setBackground(new Color(14, 22, 58));
+        statusLabel.setForeground(new Color(130, 180, 245));
         statusLabel.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createMatteBorder(0,0,1,0,new Color(60,100,200)),
-            BorderFactory.createEmptyBorder(8,12,8,12)));
-        window.add(statusLabel, BorderLayout.NORTH);
+            BorderFactory.createMatteBorder(1, 0, 1, 0, new Color(50, 90, 200)),
+            BorderFactory.createEmptyBorder(6, 14, 6, 14)));
+        northPanel.add(statusLabel, BorderLayout.SOUTH);
+        window.add(northPanel, BorderLayout.NORTH);
 
         mapPanel = new MapPanel(buildings, paths, graph, classrooms);
-        mapPanel.setPreferredSize(new Dimension(500, 700));
+        mapPanel.setPreferredSize(new Dimension(900, 730));
         window.add(mapPanel, BorderLayout.CENTER);
 
-        // Right panel: building buttons + route info
-        JPanel rightPanel = new JPanel(new BorderLayout());
-        rightPanel.setBackground(new Color(12, 18, 42));
+        // ── EAST: right panel ───────────────────────────────────
+        JPanel rightPanel = new JPanel(new BorderLayout(0, 4));
+        rightPanel.setPreferredSize(new Dimension(300, 730));
+        rightPanel.setBackground(new Color(10, 16, 42));
         rightPanel.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createMatteBorder(0,1,0,0,new Color(40,70,160)),
-            BorderFactory.createEmptyBorder(6,6,6,6)));
+            BorderFactory.createMatteBorder(0, 1, 0, 0, new Color(45, 85, 190)),
+            BorderFactory.createEmptyBorder(6, 6, 6, 6)));
 
-        JPanel buttonPanel = new JPanel(new GridLayout(buildings.length+1, 1, 3, 3));
-        buttonPanel.setBackground(new Color(12, 18, 42));
-        javax.swing.border.TitledBorder tb = BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(new Color(60,100,200),1,true), "  Select Building  ");
-        tb.setTitleColor(new Color(120,170,255));
-        tb.setTitleFont(new Font("SansSerif", Font.BOLD, 12));
-        buttonPanel.setBorder(tb);
+        JLabel panelTitle = new JLabel("  🏗  Campus Buildings");
+        panelTitle.setFont(new Font("SansSerif", Font.BOLD, 13));
+        panelTitle.setForeground(new Color(185, 215, 255));
+        panelTitle.setOpaque(true);
+        panelTitle.setBackground(new Color(16, 28, 78));
+        panelTitle.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(0, 0, 1, 0, new Color(50, 90, 200)),
+            BorderFactory.createEmptyBorder(8, 8, 8, 8)));
 
+        // Building list ─ BoxLayout with per-category sections
+        JPanel buttonPanel = new JPanel();
+        buttonPanel.setLayout(new BoxLayout(buttonPanel, BoxLayout.Y_AXIS));
+        buttonPanel.setBackground(new Color(10, 16, 42));
+
+        // Reset button
         JButton resetBtn = new JButton("⟳  Reset Map");
-        resetBtn.setBackground(new Color(160, 30, 50));
+        resetBtn.setBackground(new Color(135, 28, 48));
         resetBtn.setForeground(Color.WHITE);
         resetBtn.setFocusPainted(false);
-        resetBtn.setBorderPainted(false);
-        resetBtn.setFont(new Font("SansSerif", Font.BOLD, 11));
+        resetBtn.setFont(new Font("SansSerif", Font.BOLD, 12));
         resetBtn.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
+        resetBtn.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(220, 55, 80), 1, true),
+            BorderFactory.createEmptyBorder(7, 14, 7, 14)));
+        resetBtn.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
+        resetBtn.addMouseListener(new java.awt.event.MouseAdapter() {
+            public void mouseEntered(java.awt.event.MouseEvent e) { resetBtn.setBackground(new Color(195, 38, 65)); }
+            public void mouseExited (java.awt.event.MouseEvent e) { resetBtn.setBackground(new Color(135, 28, 48)); }
+        });
         resetBtn.addActionListener(e -> {
             mapPanel.start = null; mapPanel.end = null;
             mapPanel.clickedBuilding = null; mapPanel.selectedFloor = null;
@@ -1234,78 +1272,139 @@ public class CampusNavigation {
             mapPanel.repaint();
         });
         buttonPanel.add(resetBtn);
+        buttonPanel.add(Box.createVerticalStrut(6));
 
-        for (Building b : buildings) {
-            JButton btn = new JButton(b.name);
-            String nm = b.name;
-            Color bg;
-            if (b.isHostel()) bg = new Color(50,25,100);
-            else if (nm.contains("Block") && !nm.equals("K Block")) bg = new Color(20,50,120);
-            else if (nm.contains("Gate")||nm.contains("Parking")) bg = new Color(80,60,15);
-            else if (nm.contains("Tennis")||nm.contains("Pickleball")||nm.equals("K Block")
-                    ||nm.contains("Volleyball")||nm.contains("Basketball")
-                    ||nm.contains("Football")||nm.contains("Cricket")||nm.contains("Hanger")||nm.contains("Padel"))
-                bg = new Color(15,65,40);
-            else if (nm.contains("Mess")||nm.contains("Snapeats")||nm.contains("Hotspot")||nm.contains("Stories"))
-                bg = new Color(90,40,10);
-            else bg = new Color(18,28,65);
-            btn.setBackground(bg);
-            btn.setForeground(new Color(200,220,255));
-            btn.setFocusPainted(false);
-            btn.setBorderPainted(false);
-            btn.setFont(new Font("SansSerif", Font.PLAIN, 11));
-            btn.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
-            btn.addMouseListener(new java.awt.event.MouseAdapter() {
-                public void mouseEntered(java.awt.event.MouseEvent e) {
-                    btn.setBackground(btn.getBackground().brighter().brighter());
+        // Category definitions: {label, filterKey}
+        String[][] catDefs = {
+            {"\uD83D� GATES & PARKING", "gate"},
+            {"\uD83C\uDF93 ACADEMIC BLOCKS",  "academic"},
+            {"\uD83C\uDFE0 HOSTELS",          "hostel"},
+            {"\uD83C\uDFC5 SPORTS & RECREATION", "sport"},
+            {"\uD83C\uDF7D DINING & HANGOUT",  "dining"}
+        };
+        Color[] hdrColors = {
+            new Color(185, 145, 40), new Color(80, 155, 255),
+            new Color(160, 100, 255), new Color(55, 200, 100), new Color(255, 145, 50)
+        };
+        Color[] bgColors = {
+            new Color(66, 46, 10), new Color(16, 42, 108),
+            new Color(38, 18, 88), new Color(10, 58, 32), new Color(76, 36, 8)
+        };
+
+        for (int ci = 0; ci < catDefs.length; ci++) {
+            String catLabel = catDefs[ci][0], filterKey = catDefs[ci][1];
+            Color hdrCol = hdrColors[ci], bgCol = bgColors[ci];
+            final int ciFinal = ci;
+
+            JLabel catHdr = new JLabel("  " + catLabel);
+            catHdr.setFont(new Font("SansSerif", Font.BOLD, 10));
+            catHdr.setForeground(hdrCol);
+            catHdr.setOpaque(true);
+            catHdr.setBackground(new Color(14, 22, 55));
+            catHdr.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 1, 0, hdrCol.darker()),
+                BorderFactory.createEmptyBorder(4, 6, 4, 6)));
+            catHdr.setMaximumSize(new Dimension(Integer.MAX_VALUE, 24));
+            buttonPanel.add(catHdr);
+            buttonPanel.add(Box.createVerticalStrut(2));
+
+            for (Building b : buildings) {
+                String nm = b.name;
+                boolean match;
+                switch (ciFinal) {
+                    case 0: match = nm.contains("Gate") || nm.contains("Parking"); break;
+                    case 1: match = nm.contains("Block") && !nm.equals("K Block"); break;
+                    case 2: match = b.isHostel(); break;
+                    case 3: match = nm.contains("Tennis")||nm.contains("Pickleball")||nm.equals("K Block")
+                                    ||nm.contains("Volleyball")||nm.contains("Basketball")
+                                    ||nm.contains("Football")||nm.contains("Cricket")
+                                    ||nm.contains("Hanger")||nm.contains("Padel"); break;
+                    default: match = nm.contains("Mess")||nm.contains("Snapeats")
+                                    ||nm.contains("Hotspot")||nm.contains("Stories"); break;
                 }
-                public void mouseExited(java.awt.event.MouseEvent e) { btn.setBackground(bg); }
-            });
-            btn.addActionListener(e -> {
-                mapPanel.clickedBuilding = b; mapPanel.selectedFloor = null;
-                mapPanel.selectedRoom = null; mapPanel.navPath = null; mapPanel.showClassList = false;
-                mapPanel.resetDismissTimer(); mapPanel.repaint();
-                buildingSelected(b);
-            });
-            buttonPanel.add(btn);
+                if (!match) continue;
+
+                String icon;
+                if (b.isHostel())                                      icon = "🏠 ";
+                else if (nm.contains("Block") && !nm.equals("K Block")) icon = "🎓 ";
+                else if (nm.contains("Gate") || nm.contains("Parking")) icon = "🚚 ";
+                else if (nm.contains("Tennis")||nm.contains("Pickleball")||nm.equals("K Block")
+                        ||nm.contains("Volleyball")||nm.contains("Basketball")
+                        ||nm.contains("Football")||nm.contains("Cricket")
+                        ||nm.contains("Hanger")||nm.contains("Padel"))  icon = "🏅 ";
+                else icon = "🍽 ";
+
+                JButton btn = new JButton(icon + nm);
+                btn.setBackground(bgCol);
+                btn.setForeground(new Color(210, 228, 255));
+                btn.setFocusPainted(false);
+                btn.setFont(new Font("SansSerif", Font.PLAIN, 11));
+                btn.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
+                btn.setHorizontalAlignment(SwingConstants.LEFT);
+                btn.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(bgCol.darker(), 1, true),
+                    BorderFactory.createEmptyBorder(5, 8, 5, 8)));
+                btn.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
+                Color savedBg = bgCol;
+                btn.addMouseListener(new java.awt.event.MouseAdapter() {
+                    public void mouseEntered(java.awt.event.MouseEvent e) { btn.setBackground(savedBg.brighter()); }
+                    public void mouseExited (java.awt.event.MouseEvent e) { btn.setBackground(savedBg); }
+                });
+                btn.addActionListener(e -> {
+                    mapPanel.clickedBuilding = b; mapPanel.selectedFloor = null;
+                    mapPanel.selectedRoom = null; mapPanel.navPath = null; mapPanel.showClassList = false;
+                    mapPanel.resetDismissTimer(); mapPanel.repaint();
+                    buildingSelected(b);
+                });
+                buttonPanel.add(btn);
+                buttonPanel.add(Box.createVerticalStrut(2));
+            }
+            buttonPanel.add(Box.createVerticalStrut(4));
         }
 
-        infoArea = new JTextArea(6, 20);
+        // Route info area
+        infoArea = new JTextArea(10, 24);
         infoArea.setEditable(false);
-        infoArea.setFont(new Font("Courier New", Font.PLAIN, 11));
+        infoArea.setFont(new Font("Courier New", Font.PLAIN, 12));
         infoArea.setLineWrap(true); infoArea.setWrapStyleWord(true);
         infoArea.setText("Select two buildings to find a route.");
-        infoArea.setBackground(new Color(10,16,38)); infoArea.setForeground(new Color(160,210,255));
-        infoArea.setCaretColor(new Color(100,160,255));
+        infoArea.setBackground(new Color(8, 14, 36));
+        infoArea.setForeground(new Color(170, 215, 255));
+        infoArea.setCaretColor(new Color(100, 160, 255));
         javax.swing.border.TitledBorder ib = BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(new Color(60,100,200),1,true), "  Route Info  ");
-        ib.setTitleColor(new Color(120,170,255));
+            BorderFactory.createLineBorder(new Color(60, 100, 200), 1, true), "  📍 Route Info  ");
+        ib.setTitleColor(new Color(130, 180, 255));
         ib.setTitleFont(new Font("SansSerif", Font.BOLD, 11));
         infoArea.setBorder(ib);
 
         JScrollPane btnScroll = new JScrollPane(buttonPanel);
-        btnScroll.setBackground(new Color(12,18,42));
-        btnScroll.getViewport().setBackground(new Color(12,18,42));
+        btnScroll.setBackground(new Color(10, 16, 42));
+        btnScroll.getViewport().setBackground(new Color(10, 16, 42));
         btnScroll.setBorder(BorderFactory.createEmptyBorder());
+        btnScroll.getVerticalScrollBar().setUnitIncrement(16);
 
         JScrollPane infoScroll = new JScrollPane(infoArea);
-        infoScroll.setBackground(new Color(10,16,38));
-        infoScroll.getViewport().setBackground(new Color(10,16,38));
+        infoScroll.setBackground(new Color(8, 14, 36));
+        infoScroll.getViewport().setBackground(new Color(8, 14, 36));
         infoScroll.setBorder(BorderFactory.createEmptyBorder());
+        infoScroll.setMinimumSize(new Dimension(300, 200));
+        infoScroll.setPreferredSize(new Dimension(300, 240));
 
+        rightPanel.add(panelTitle, BorderLayout.NORTH);
         rightPanel.add(btnScroll,  BorderLayout.CENTER);
         rightPanel.add(infoScroll, BorderLayout.SOUTH);
         window.add(rightPanel, BorderLayout.EAST);
 
+        // ── SOUTH: help bar ─────────────────────────────────
         JLabel bottomBar = new JLabel(
-            "  💡  Click map building → info card (auto-hides 4s)  |  Hostels: Floor → Room → Navigate  |  Right panel: A → B routing");
-        bottomBar.setFont(new Font("SansSerif", Font.ITALIC, 11));
+            "  💡  Click map → info card (4s auto-hide)  |  Hostel: Floor → Room → Navigate  |  Right panel: pick A then B for route  |  ⟳ to reset");
+        bottomBar.setFont(new Font("SansSerif", Font.PLAIN, 11));
         bottomBar.setOpaque(true);
-        bottomBar.setBackground(new Color(14, 22, 55));
-        bottomBar.setForeground(new Color(100, 140, 220));
+        bottomBar.setBackground(new Color(12, 18, 48));
+        bottomBar.setForeground(new Color(100, 140, 210));
         bottomBar.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createMatteBorder(1,0,0,0,new Color(40,70,160)),
-            BorderFactory.createEmptyBorder(6,12,6,12)));
+            BorderFactory.createMatteBorder(1, 0, 0, 0, new Color(40, 70, 160)),
+            BorderFactory.createEmptyBorder(6, 12, 6, 12)));
         window.add(bottomBar, BorderLayout.SOUTH);
 
         window.setLocationRelativeTo(null);
